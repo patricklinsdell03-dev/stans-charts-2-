@@ -1,0 +1,91 @@
+name: Weekly Weinstein scan
+
+on:
+  schedule:
+    # 08:00 UTC every Saturday. US and UK weekly bars are both final by then,
+    # which matters: running before Friday's close scores a partial week whose
+    # volume figure is truncated and whose close is not a weekly close.
+    - cron: "0 8 * * 6"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "scan runs the weekly scan; doctor checks every external dependency and reports which one is broken"
+        default: scan
+        type: choice
+        options: [scan, doctor]
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Ensure the project files are present
+        # The GitHub web uploader, and every mobile browser, drops FOLDERS on
+        # drag-and-drop and keeps only loose top-level files. The symptom is that
+        # requirements.txt installs happily and then the scan cannot import the
+        # package that never arrived. Rather than making you recreate fifteen
+        # files by hand, this accepts the project as a single uploaded zip, which
+        # is one file and therefore survives that upload path intact.
+        run: |
+          set -e
+          if [ ! -f weinstein/cli.py ]; then
+            echo "No weinstein/ package at the repository root. Looking for a zip."
+            zip=$(ls -1 weinstein-tracker*.zip 2>/dev/null | head -n1 || true)
+            if [ -z "$zip" ]; then
+              echo "::error::Found neither a weinstein/ folder nor a weinstein-tracker zip."
+              echo "Upload weinstein-tracker.zip to the repository root and re-run."
+              ls -la
+              exit 1
+            fi
+            echo "Extracting $zip"
+            unzip -oq "$zip"
+            if [ -d weinstein-tracker ]; then
+              shopt -s dotglob
+              cp -r weinstein-tracker/* .
+              rm -rf weinstein-tracker
+            fi
+          fi
+          test -f weinstein/cli.py || { echo "::error::still no weinstein/cli.py"; ls -la; exit 1; }
+          python -c "import weinstein; print('package imports cleanly')"
+
+      - run: pip install -r requirements.txt
+
+      - name: Preflight
+        if: ${{ github.event.inputs.mode == 'doctor' }}
+        run: python -m weinstein.cli doctor
+
+      - name: Run scan
+        if: ${{ github.event.inputs.mode != 'doctor' }}
+        run: python -m weinstein.cli scan --out docs/index.html
+      - name: Upload dashboard as a run artifact
+        if: ${{ github.event.inputs.mode != 'doctor' }}
+        # Lets a private repository, where GitHub Pages is unavailable on the
+        # free tier, still collect each week's dashboard by download.
+        uses: actions/upload-artifact@v4
+        with:
+          name: weinstein-dashboard
+          path: |
+            docs/index.html
+            docs/index_full.csv
+            docs/index_alerts.csv
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Commit dashboard
+        if: ${{ github.event.inputs.mode != 'doctor' }}
+        run: |
+          git config user.name  "weinstein-bot"
+          git config user.email "actions@github.com"
+          for f in docs/index.html docs/index_alerts.csv cache/universe_*.csv; do
+            [ -e "$f" ] && git add -f "$f"
+          done
+          git diff --staged --quiet || git commit -m "weekly scan $(date -u +%Y-%m-%d)"
+          git push

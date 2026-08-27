@@ -1,0 +1,6 @@
+ticker,entry_date,entry_price,shares,initial_stop,side
+# Delete these two example rows and add your own. entry_date is the week you
+# bought, in YYYY-MM-DD. initial_stop is optional: leave it blank and the plan
+# rebuilds the stop from the base that existed at your entry date.
+# AAPL,2026-03-06,168.40,60,151.20,long
+# BP.L,2026-05-15,412.50,300,381.00,long
